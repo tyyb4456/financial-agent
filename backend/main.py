@@ -1,64 +1,70 @@
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import Dict, Any, Optional
-from crews import crews  # Import the crew definitions
+"""
+main.py — Application entrypoint
+---------------------------------
+Responsibilities:
+  1. Configure logging
+  2. Optionally enable LangSmith tracing
+  3. Mount the API router
+  4. Start uvicorn
+
+Keep this file thin. Business logic lives in graphs/, tools/, chains/.
+"""
+
 import os
 import uvicorn
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI()
+from config import settings, logging
+from api.routes import router
+from config.settings import settings
+
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+logging.configure_logging()
+
+import structlog
+log = structlog.get_logger(__name__)
+
+
+# ── LangSmith tracing (opt-in via env) ────────────────────────────────────────
+if settings.langsmith_tracing and settings.langsmith_api_key:
+    os.environ["LANGSMITH_TRACING"]  = "true"
+    os.environ["LANGSMITH_API_KEY"]  = settings.langsmith_api_key
+    os.environ["LANGSMITH_PROJECT"]  = settings.langsmith_project
+    log.info("langsmith.tracing.enabled", project=settings.langsmith_project)
+
+
+# ── FastAPI app ───────────────────────────────────────────────────────────────
+app = FastAPI(
+    title="AI Workflows API",
+    description="LangGraph-powered AI workflow engine.",
+    version="2.0.0",
+)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Change to "*" if testing
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-class CrewRequest(BaseModel):
-    crew_name: str
-    inputs: Dict[str, Any]
+app.include_router(router, prefix="/api/v1")
 
-# Store the last response in memory
-latest_response: Optional[Dict[str, Any]] = None
 
-@app.get("/")
-def read_root():
-    if latest_response is None:
-        return {"message": "FastAPI is running! No response available yet."}
-    return latest_response
+# ── Health check ──────────────────────────────────────────────────────────────
+@app.get("/", tags=["health"])
+async def health():
+    return {"status": "ok", "version": "2.0.0"}
 
-@app.post("/execute_crew/")
-async def execute_crew(request: CrewRequest):
-    global latest_response  # Modify global variable
 
-    # Check if the crew exists
-    if request.crew_name not in crews:
-        raise HTTPException(status_code=404, detail="Crew not found")
-
-    crew_definition = crews[request.crew_name]
-
-    # Validate required inputs
-    missing_keys = [
-        key for key in crew_definition.required_inputs.keys() if key not in request.inputs
-    ]
-    if missing_keys:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Missing required inputs: {', '.join(missing_keys)}",
-        )
-
-    # Filter inputs: include only valid required and optional keys
-    valid_inputs = {k: v for k, v in request.inputs.items() if k in crew_definition.required_inputs or k in crew_definition.optional_inputs}
-
-    # Execute the selected crew
-    output = crew_definition.crew.kickoff(inputs=valid_inputs)
-
-    latest_response = {"crew_name": request.crew_name, "output": output}  # Store response
-
-    return latest_response
-
-if __name__ == "__main__":
-    port = int(os.getenv("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+# # ── Dev server ────────────────────────────────────────────────────────────────
+# if __name__ == "__main__":
+#     uvicorn.run(
+#         "main:app",
+#         host="0.0.0.0",
+#         port=settings.app_port,
+#         reload=True,
+#         log_level=settings.log_level.lower(),
+#     )
