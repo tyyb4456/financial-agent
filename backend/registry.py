@@ -1,114 +1,108 @@
 """
 Graph registry
 --------------
-Single source of truth that maps a graph name (string) to:
-  - the compiled LangGraph instance
-  - the Pydantic input model for request validation
-  - a list of required field names (for clear error messages)
+Maps graph name → RegistryEntry.
 
-The graphs themselves are imported lazily (inside get_registry()) so that
-import errors in one graph don't bring down the whole API.
+Each entry stores the graph BUILDER (_build function), not just the compiled
+graph, so the API layer can recompile with a checkpointer injected per-request.
 
-Usage:
-    from registry import get_registry
-
-    registry = get_registry()
-    entry    = registry["financial_reporter"]
-    result   = await entry.graph.ainvoke(entry.schema(**inputs).model_dump())
+The bare compiled graph (no checkpointer) is also cached for streaming
+use-cases where persistence isn't needed.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Type
+from dataclasses import dataclass, field
+from typing import Any, Callable, Type
 
 from pydantic import BaseModel
 
 
-# ── Per-entry input schemas (Pydantic v2) ─────────────────────────────────────
+# ── Input schemas ─────────────────────────────────────────────────────────────
 
 class FinancialReporterInput(BaseModel):
     symbol: str
 
-
 class InvestmentAdvisorInput(BaseModel):
     symbol: str
-
 
 class FinancialQueryInput(BaseModel):
     symbol: str
     query:  str
 
-
 class RedditInput(BaseModel):
     subreddit_name: str
-
 
 class NewsInput(BaseModel):
     topic: str
 
-
 class MedicalInput(BaseModel):
     term:  str
-    query: str = ""   # optional
+    query: str = ""
 
 
 # ── Registry entry ────────────────────────────────────────────────────────────
 
 @dataclass
 class RegistryEntry:
-    graph:       Any            # compiled LangGraph (CompiledStateGraph)
+    builder:     Callable          # _build(checkpointer=None) function
     schema:      Type[BaseModel]
     description: str
+    _graph:      Any = field(default=None, repr=False)   # cached bare graph
+
+    @property
+    def graph(self):
+        """Bare compiled graph (no checkpointer). Cached on first access."""
+        if self._graph is None:
+            self._graph = self.builder()
+        return self._graph
+
+    def with_checkpointer(self, saver):
+        """Return a fresh compiled graph with `saver` as checkpointer."""
+        return self.builder(checkpointer=saver)
 
 
-# ── Builder ───────────────────────────────────────────────────────────────────
+# ── Builder (singleton) ───────────────────────────────────────────────────────
+
+_registry: dict[str, RegistryEntry] | None = None
+
 
 def get_registry() -> dict[str, RegistryEntry]:
-    """
-    Build and return the registry dict.
+    global _registry
+    if _registry is not None:
+        return _registry
 
-    Graphs are imported here (not at module level) to keep startup clean
-    and allow individual graphs to fail without cascading.
-    """
+    from graphs.financial  import _build as fb
+    from graphs.investment import _build as ib
+    from graphs.query      import _build as qb
+    from graphs.reddit     import _build as rb
+    from graphs.news       import _build as nb
+    from graphs.medical    import _build as mb
 
-    # Import graphs lazily
-    from graphs.financial   import financial_graph
-    from graphs.investment  import investment_graph
-    from graphs.query       import query_graph
-    from graphs.reddit      import reddit_graph
-    from graphs.news        import news_graph
-    from graphs.medical     import medical_graph
-
-    return {
+    _registry = {
         "financial_reporter": RegistryEntry(
-            graph=financial_graph,
-            schema=FinancialReporterInput,
+            builder=fb, schema=FinancialReporterInput,
             description="Retrieve and analyse financial reports for a stock symbol.",
         ),
         "investment_advisor": RegistryEntry(
-            graph=investment_graph,
-            schema=InvestmentAdvisorInput,
+            builder=ib, schema=InvestmentAdvisorInput,
             description="Provide tailored investment recommendations for a stock symbol.",
         ),
         "financial_query": RegistryEntry(
-            graph=query_graph,
-            schema=FinancialQueryInput,
+            builder=qb, schema=FinancialQueryInput,
             description="Answer a specific financial question about a stock symbol.",
         ),
         "trending_posts": RegistryEntry(
-            graph=reddit_graph,
-            schema=RedditInput,
+            builder=rb, schema=RedditInput,
             description="Retrieve and analyse trending posts from a subreddit.",
         ),
         "news_reporter": RegistryEntry(
-            graph=news_graph,
-            schema=NewsInput,
+            builder=nb, schema=NewsInput,
             description="Generate a news report on a given topic.",
         ),
         "medical_researcher": RegistryEntry(
-            graph=medical_graph,
-            schema=MedicalInput,
+            builder=mb, schema=MedicalInput,
             description="Retrieve and summarise medical research from PubMed.",
         ),
     }
+    return _registry

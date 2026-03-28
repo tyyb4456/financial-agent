@@ -15,13 +15,12 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from config import settings, logging
+from config import settings, configure_logging
 from api.routes import router
-from config.settings import settings
 
 
 # ── Logging ───────────────────────────────────────────────────────────────────
-logging.configure_logging()
+configure_logging()
 
 import structlog
 log = structlog.get_logger(__name__)
@@ -59,12 +58,12 @@ async def health():
     return {"status": "ok", "version": "2.0.0"}
 
 
-# # ── Dev server ────────────────────────────────────────────────────────────────
-# if __name__ == "__main__":
-#     uvicorn.run(
-#         "main:app",
-#         host="0.0.0.0",
-#         port=settings.app_port,
-#         reload=True,
-#         log_level=settings.log_level.lower(),
-#     )
+# ── Dev server ────────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=settings.app_port,
+        reload=True,
+        log_level=settings.log_level.lower(),
+    )
