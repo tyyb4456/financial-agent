@@ -3,11 +3,15 @@ api/routes.py
 -------------
 FastAPI router — graph execution endpoints.
 
+Every request gets a correlation_id (UUID) injected into structlog's
+context vars so every log line during that request carries the same ID.
+LangSmith tracing metadata + tags are injected via trace_graph_run().
+
 Endpoints:
   GET  /graphs                     → list all graphs + input schemas
   POST /run/{graph_name}           → sync invoke, returns full result
-  POST /stream/{graph_name}        → SSE streaming with node-level updates + LLM tokens
-  GET  /history/{graph_name}       → checkpoint history for a thread (requires thread_id)
+  POST /stream/{graph_name}        → SSE streaming (node updates + LLM tokens)
+  GET  /history/{graph_name}       → checkpoint history for a thread
 """
 
 from __future__ import annotations
@@ -17,11 +21,12 @@ import uuid
 import structlog
 from typing import Any, AsyncGenerator
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, ValidationError
 
-from config.checkpointer import get_async_checkpointer
+from config.checkpointer  import get_async_checkpointer
+from config.observability  import trace_graph_run
 from registry import get_registry
 
 log    = structlog.get_logger(__name__)
@@ -39,9 +44,10 @@ class RunRequest(BaseModel):
 
 
 class RunResponse(BaseModel):
-    graph:     str
-    thread_id: str
-    result:    str
+    graph:          str
+    thread_id:      str
+    result:         str
+    correlation_id: str
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -52,7 +58,10 @@ def _get_entry(graph_name: str):
     if entry is None:
         raise HTTPException(
             status_code=404,
-            detail={"error": f"Graph '{graph_name}' not found.", "available": list(registry.keys())},
+            detail={
+                "error":     f"Graph '{graph_name}' not found.",
+                "available": list(registry.keys()),
+            },
         )
     return entry
 
@@ -67,12 +76,12 @@ def _validate(entry, raw: dict) -> dict:
         )
 
 
-def _lg_config(thread_id: str) -> dict:
-    return {"configurable": {"thread_id": thread_id}}
+def _correlation_id() -> str:
+    return str(uuid.uuid4())
 
 
 def _safe_serialise(obj: Any) -> Any:
-    """Make graph state JSON-safe. Truncates large strings to keep SSE payloads small."""
+    """Make graph state JSON-safe. Truncates large strings for SSE payloads."""
     if isinstance(obj, dict):
         return {k: _safe_serialise(v) for k, v in obj.items()}
     if isinstance(obj, list):
@@ -106,27 +115,43 @@ async def run_graph(graph_name: str, request: RunRequest):
     """
     Invoke a graph synchronously and return the full result.
 
-    Every super-step is checkpointed to SQLite. Pass the same thread_id
-    on a subsequent call to resume or re-inspect a previous run.
+    Every super-step is checkpointed. LangSmith traces are automatically
+    tagged with graph name, thread_id, environment, and app version when
+    LANGSMITH_TRACING=true.
     """
+    cid    = _correlation_id()
     entry  = _get_entry(graph_name)
     inputs = _validate(entry, request.inputs)
-    config = _lg_config(request.thread_id)
 
-    log.info("graph.run.start", graph=graph_name, thread_id=request.thread_id)
+    # Bind correlation_id to all log lines in this request
+    structlog.contextvars.bind_contextvars(
+        correlation_id=cid,
+        graph=graph_name,
+        thread_id=request.thread_id,
+    )
+
+    log.info("graph.run.start", inputs_keys=list(inputs.keys()))
 
     try:
-        async with get_async_checkpointer() as saver:
-            compiled = entry.with_checkpointer(saver)
-            output   = await compiled.ainvoke(inputs, config=config)
-            result   = output.get("result", str(output))
+        async with trace_graph_run(graph_name, request.thread_id, inputs) as lg_config:
+            async with get_async_checkpointer() as saver:
+                compiled = entry.with_checkpointer(saver)
+                output   = await compiled.ainvoke(inputs, config=lg_config)
+                result   = output.get("result", str(output))
 
     except Exception as exc:
-        log.error("graph.run.error", graph=graph_name, error=str(exc))
+        log.error("graph.run.error", error=str(exc))
         raise HTTPException(status_code=500, detail={"error": str(exc)})
+    finally:
+        structlog.contextvars.clear_contextvars()
 
-    log.info("graph.run.done", graph=graph_name, thread_id=request.thread_id)
-    return RunResponse(graph=graph_name, thread_id=request.thread_id, result=result)
+    log.info("graph.run.done")
+    return RunResponse(
+        graph=graph_name,
+        thread_id=request.thread_id,
+        result=result,
+        correlation_id=cid,
+    )
 
 
 @router.post("/stream/{graph_name}", summary="Stream a graph via SSE")
@@ -134,65 +159,68 @@ async def stream_graph(graph_name: str, request: RunRequest):
     """
     Stream graph execution as Server-Sent Events (SSE).
 
-    Each event is a JSON object. Event types:
-      node_update  → { type, node, data }    — node finished, state diff
-      llm_token    → { type, token }         — streamed LLM token
-      done         → { type, thread_id }     — graph finished
-      error        → { type, error }         — unrecoverable error
+    Event types emitted:
+      node_update  → { type, node, data }
+      llm_token    → { type, token }
+      done         → { type, thread_id, correlation_id }
+      error        → { type, error, correlation_id }
     """
+    cid    = _correlation_id()
     entry  = _get_entry(graph_name)
     inputs = _validate(entry, request.inputs)
-    config = _lg_config(request.thread_id)
 
-    log.info("graph.stream.start", graph=graph_name, thread_id=request.thread_id)
+    log.info(
+        "graph.stream.start",
+        graph=graph_name,
+        thread_id=request.thread_id,
+        correlation_id=cid,
+    )
 
     async def event_generator() -> AsyncGenerator[str, None]:
         def _emit(payload: dict) -> str:
             return f"data: {json.dumps(payload)}\n\n"
 
         try:
-            # Bare graph (no checkpointer) for streaming — avoids SQLite context
-            # manager complexity inside an async generator.
-            graph = entry.graph
+            async with trace_graph_run(graph_name, request.thread_id, inputs) as lg_config:
+                async for chunk in entry.graph.astream(
+                    inputs,
+                    config=lg_config,
+                    stream_mode=["updates", "messages"],
+                    version="v2",
+                ):
+                    chunk_type = chunk.get("type")
+                    data       = chunk.get("data")
 
-            async for chunk in graph.astream(
-                inputs,
-                config=config,
-                stream_mode=["updates", "messages"],
-                version="v2",
-            ):
-                chunk_type = chunk.get("type")
-                data       = chunk.get("data")
+                    if chunk_type == "updates":
+                        for node_name, state_diff in data.items():
+                            if node_name.startswith("__"):
+                                continue
+                            yield _emit({
+                                "type": "node_update",
+                                "node": node_name,
+                                "data": _safe_serialise(state_diff),
+                            })
 
-                if chunk_type == "updates":
-                    for node_name, state_diff in data.items():
-                        if node_name.startswith("__"):
-                            continue
-                        yield _emit({
-                            "type": "node_update",
-                            "node": node_name,
-                            "data": _safe_serialise(state_diff),
-                        })
+                    elif chunk_type == "messages":
+                        msg_chunk, _ = data
+                        token = getattr(msg_chunk, "content", "")
+                        if token:
+                            yield _emit({"type": "llm_token", "token": token})
 
-                elif chunk_type == "messages":
-                    msg_chunk, _ = data
-                    token = getattr(msg_chunk, "content", "")
-                    if token:
-                        yield _emit({"type": "llm_token", "token": token})
-
-            yield _emit({"type": "done", "thread_id": request.thread_id})
+            yield _emit({"type": "done", "thread_id": request.thread_id, "correlation_id": cid})
 
         except Exception as exc:
-            log.error("graph.stream.error", graph=graph_name, error=str(exc))
-            yield _emit({"type": "error", "error": str(exc)})
+            log.error("graph.stream.error", graph=graph_name, error=str(exc), correlation_id=cid)
+            yield _emit({"type": "error", "error": str(exc), "correlation_id": cid})
 
     return StreamingResponse(
         event_generator(),
         media_type="text/event-stream",
         headers={
-            "Cache-Control":    "no-cache",
+            "Cache-Control":     "no-cache",
             "X-Accel-Buffering": "no",
-            "Connection":       "keep-alive",
+            "Connection":        "keep-alive",
+            "X-Correlation-ID":  cid,
         },
     )
 
@@ -201,18 +229,19 @@ async def stream_graph(graph_name: str, request: RunRequest):
 async def get_history(graph_name: str, thread_id: str):
     """
     Return all saved checkpoints for a graph + thread_id pair.
-
-    Useful for debugging, audit trails, and time-travel.
     Requires that /run was previously called with the same thread_id.
     """
-    entry  = _get_entry(graph_name)
-    config = _lg_config(thread_id)
+    cid   = _correlation_id()
+    entry = _get_entry(graph_name)
+    lg_config = {"configurable": {"thread_id": thread_id}}
+
+    log.info("history.start", graph=graph_name, thread_id=thread_id, correlation_id=cid)
 
     try:
         async with get_async_checkpointer() as saver:
             compiled = entry.with_checkpointer(saver)
             history  = []
-            async for snapshot in compiled.aget_state_history(config):
+            async for snapshot in compiled.aget_state_history(lg_config):
                 history.append({
                     "checkpoint_id": snapshot.config["configurable"].get("checkpoint_id"),
                     "next_nodes":    list(snapshot.next),
@@ -220,8 +249,13 @@ async def get_history(graph_name: str, thread_id: str):
                     "created_at":    str(snapshot.created_at) if snapshot.created_at else None,
                 })
 
-        return {"graph": graph_name, "thread_id": thread_id, "history": history}
-
     except Exception as exc:
-        log.error("history.error", graph=graph_name, error=str(exc))
+        log.error("history.error", graph=graph_name, error=str(exc), correlation_id=cid)
         raise HTTPException(status_code=500, detail={"error": str(exc)})
+
+    return {
+        "graph":          graph_name,
+        "thread_id":      thread_id,
+        "history":        history,
+        "correlation_id": cid,
+    }

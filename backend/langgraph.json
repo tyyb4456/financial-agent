@@ -1,0 +1,12 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "financial_reporter": "./graphs/financial.py:financial_graph",
+    "investment_advisor": "./graphs/investment.py:investment_graph",
+    "financial_query":    "./graphs/query.py:query_graph",
+    "trending_posts":     "./graphs/reddit.py:reddit_graph",
+    "news_reporter":      "./graphs/news.py:news_graph",
+    "medical_researcher": "./graphs/medical.py:medical_graph"
+  },
+  "env": "./.env"
+}
