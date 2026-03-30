@@ -1,13 +1,12 @@
 """
-graphs/medical.py
-------------------
-Medical Researcher workflow with a conditional branch:
+graphs/medical.py — Now fully async
+------------------------------------
+Medical Researcher workflow with a conditional branch.
 
   START → fetch_abstracts → route ─┬─ (query provided) → answer_query → END
                                    └─ (no query)        → summarise    → END
 
-This is the first graph that uses add_conditional_edges — demonstrating
-LangGraph's branching capability over the old sequential-only CrewAI setup.
+Async nodes with async tool calls via ainvoke.
 """
 
 from __future__ import annotations
@@ -47,15 +46,15 @@ Abstracts:
 """
 
 
-# ── Nodes ─────────────────────────────────────────────────────────────────────
+# ── Nodes (async) ─────────────────────────────────────────────────────────────
 
-def fetch_abstracts(state: MedicalState) -> dict:
+async def fetch_abstracts(state: MedicalState) -> dict:
     log.info("medical_graph.fetch_abstracts", term=state["term"])
-    abstracts = fetch_pubmed_abstracts.invoke({"term": state["term"], "max_results": 2})
+    abstracts = await fetch_pubmed_abstracts.ainvoke({"term": state["term"], "max_results": 2})
     return {"raw_abstract": abstracts}
 
 
-def summarise(state: MedicalState) -> dict:
+async def summarise(state: MedicalState) -> dict:
     log.info("medical_graph.summarise", term=state["term"])
     prompt = _SUMMARY_PROMPT.format(
         term=state["term"],
@@ -65,7 +64,7 @@ def summarise(state: MedicalState) -> dict:
     return {"result": response.content}
 
 
-def answer_query(state: MedicalState) -> dict:
+async def answer_query(state: MedicalState) -> dict:
     log.info("medical_graph.answer_query", term=state["term"], query=state["query"])
     prompt = _QUERY_PROMPT.format(
         query=state["query"],

@@ -1,9 +1,7 @@
 """
-graphs/financial.py  — FIXED
-------------------------------
-Added error guard in fetch_data: if the tool returns {"error": ...},
-raise RuntimeError immediately so the graph fails fast with a real error
-instead of passing garbage to the LLM.
+graphs/financial.py  — Now fully async
+---------------------------------------
+Financial analysis graph with async node functions and async tool calls.
 """
 
 from __future__ import annotations
@@ -30,16 +28,16 @@ Raw data:
 {raw_data}
 """
 
-def fetch_data(state: FinancialState) -> dict:
+async def fetch_data(state: FinancialState) -> dict:
     log.info("financial_graph.fetch_data", symbol=state["symbol"])
-    data = fetch_financials.invoke({"symbol": state["symbol"]})
-    if "error" in data:                           # ← ADDED: fail fast
+    data = await fetch_financials.ainvoke({"symbol": state["symbol"]})
+    if "error" in data:
         raise RuntimeError(
             f"Failed to fetch financials for {state['symbol']}: {data['error']}"
         )
     return {"raw_financials": data}
 
-def write_report(state: FinancialState) -> dict:
+async def write_report(state: FinancialState) -> dict:
     log.info("financial_graph.write_report", symbol=state["symbol"])
     prompt = _REPORT_PROMPT.format(
         symbol=state["symbol"],

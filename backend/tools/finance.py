@@ -3,16 +3,17 @@ tools/finance.py
 ----------------
 Yahoo Finance tools using yfinance — clean, no API key needed.
 
-yfinance's .info dict contains all fields in one call, so we make ONE
-request per tool instead of multiple yahooquery property fetches.
+All tools are now ASYNC to support concurrent execution in graph nodes.
+Tools use asyncio.to_thread() to offload blocking I/O.
 
-Two tools exposed (same interface as always):
+Two tools exposed (async versions):
   - fetch_financials          → financials, market summary, live price
   - fetch_investment_analysis → valuation, earnings history, analyst recs
 """
 
 from __future__ import annotations
 
+import asyncio
 import structlog
 from pydantic import BaseModel, Field
 from langchain.tools import tool
@@ -53,10 +54,10 @@ def _get_info(symbol: str) -> dict:
     return info
 
 
-# ── Tools ─────────────────────────────────────────────────────────────────────
+# ── Tools (async) ─────────────────────────────────────────────────────────────
 
 @tool("fetch_financials", args_schema=FinancialsInput)
-def fetch_financials(symbol: str) -> dict:
+async def fetch_financials(symbol: str) -> dict:
     """
     Fetch company financials, market summary, and live stock price from Yahoo Finance.
 
@@ -66,7 +67,8 @@ def fetch_financials(symbol: str) -> dict:
     log.info("tool.fetch_financials", symbol=symbol)
 
     try:
-        info = _get_info(symbol)
+        # Run blocking yfinance call in thread pool to avoid blocking event loop
+        info = await asyncio.to_thread(_get_info, symbol)
         data = {
             "financials": {
                 symbol: {
@@ -112,7 +114,7 @@ def fetch_financials(symbol: str) -> dict:
 
 
 @tool("fetch_investment_analysis", args_schema=InvestmentInput)
-def fetch_investment_analysis(symbol: str) -> dict:
+async def fetch_investment_analysis(symbol: str) -> dict:
     """
     Fetch investment analysis data: valuation multiples, earnings history,
     and analyst buy/sell/hold recommendations from Yahoo Finance.
@@ -122,7 +124,8 @@ def fetch_investment_analysis(symbol: str) -> dict:
     log.info("tool.fetch_investment_analysis", symbol=symbol)
 
     try:
-        ticker = yf.Ticker(symbol)
+        # Run blocking yfinance calls in thread pool
+        ticker = await asyncio.to_thread(yf.Ticker, symbol)
         info   = ticker.info
 
         earnings_history = []

@@ -3,6 +3,7 @@ tools/pubmed.py
 ---------------
 PubMed E-utilities tool for fetching medical article abstracts.
 
+Now async — uses httpx for async HTTP calls.
 Uses NCBI's free ESearch + EFetch endpoints — no API key required.
 Fetches up to `max_results` article IDs then retrieves their abstracts.
 """
@@ -10,7 +11,7 @@ Fetches up to `max_results` article IDs then retrieves their abstracts.
 from __future__ import annotations
 
 import structlog
-import requests
+import httpx
 from pydantic import BaseModel, Field
 from langchain.tools import tool
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
@@ -21,7 +22,7 @@ _ESEARCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
 _EFETCH_URL  = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
 
 _http_retry = retry(
-    retry=retry_if_exception_type(requests.RequestException),
+    retry=retry_if_exception_type(httpx.HTTPError),
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=1, max=10),
     reraise=True,
@@ -43,10 +44,10 @@ class PubMedInput(BaseModel):
     )
 
 
-# ── Tool ──────────────────────────────────────────────────────────────────────
+# ── Tool (async) ──────────────────────────────────────────────────────────────
 
 @tool("fetch_pubmed_abstracts", args_schema=PubMedInput)
-def fetch_pubmed_abstracts(term: str, max_results: int = 2) -> str:
+async def fetch_pubmed_abstracts(term: str, max_results: int = 2) -> str:
     """
     Search PubMed for medical articles matching a term and return their abstracts.
 
@@ -58,41 +59,41 @@ def fetch_pubmed_abstracts(term: str, max_results: int = 2) -> str:
     try:
         # ── Step 1: search for article IDs ────────────────────────────────────
         @_http_retry
-        def _esearch() -> list[str]:
-            resp = requests.get(
-                _ESEARCH_URL,
-                params={"db": "pubmed", "term": term, "retmax": str(max_results), "retmode": "json"},
-                timeout=15,
-            )
-            resp.raise_for_status()
-            return resp.json().get("esearchresult", {}).get("idlist", [])
+        async def _esearch() -> list[str]:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.get(
+                    _ESEARCH_URL,
+                    params={"db": "pubmed", "term": term, "retmax": str(max_results), "retmode": "json"},
+                )
+                resp.raise_for_status()
+                return resp.json().get("esearchresult", {}).get("idlist", [])
 
-        ids = _esearch()
+        ids = await _esearch()
 
         if not ids:
             return f"No PubMed articles found for: {term}"
 
         # ── Step 2: fetch abstracts ────────────────────────────────────────────
         @_http_retry
-        def _efetch(article_ids: list[str]) -> str:
-            resp = requests.get(
-                _EFETCH_URL,
-                params={
-                    "db":      "pubmed",
-                    "id":      ",".join(article_ids),
-                    "retmode": "text",
-                    "rettype": "abstract",
-                },
-                timeout=20,
-            )
-            resp.raise_for_status()
-            return resp.text
+        async def _efetch(article_ids: list[str]) -> str:
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                resp = await client.get(
+                    _EFETCH_URL,
+                    params={
+                        "db":      "pubmed",
+                        "id":      ",".join(article_ids),
+                        "retmode": "text",
+                        "rettype": "abstract",
+                    },
+                )
+                resp.raise_for_status()
+                return resp.text
 
-        abstracts = _efetch(ids)
+        abstracts = await _efetch(ids)
         log.info("tool.fetch_pubmed_abstracts.done", term=term, articles=len(ids))
         return abstracts
 
-    except requests.RequestException as exc:
+    except httpx.HTTPError as exc:
         log.error("tool.fetch_pubmed_abstracts.error", term=term, error=str(exc))
         return f"Failed to fetch PubMed data: {exc}"
     except Exception as exc:

@@ -1,5 +1,7 @@
 """
-graphs/query.py  — FIXED
+graphs/query.py  — Now fully async
+-----------------------------------
+Query graph with async node functions and async tool calls via ainvoke.
 """
 
 from __future__ import annotations
@@ -28,25 +30,25 @@ Investment Data:
 {investment}
 """
 
-def fetch_data(state: QueryState) -> dict:
+async def fetch_data(state: QueryState) -> dict:
     log.info("query_graph.fetch_data", symbol=state["symbol"])
-    data = fetch_financials.invoke({"symbol": state["symbol"]})
-    if "error" in data:                           # ← ADDED
+    data = await fetch_financials.ainvoke({"symbol": state["symbol"]})
+    if "error" in data:
         raise RuntimeError(
             f"Failed to fetch financials for {state['symbol']}: {data['error']}"
         )
     return {"raw_financials": data}
 
-def fetch_analysis(state: QueryState) -> dict:
+async def fetch_analysis(state: QueryState) -> dict:
     log.info("query_graph.fetch_analysis", symbol=state["symbol"])
-    data = fetch_investment_analysis.invoke({"symbol": state["symbol"]})
-    if "error" in data:                           # ← ADDED
+    data = await fetch_investment_analysis.ainvoke({"symbol": state["symbol"]})
+    if "error" in data:
         raise RuntimeError(
             f"Failed to fetch investment data for {state['symbol']}: {data['error']}"
         )
     return {"raw_investment": data}
 
-def answer_query(state: QueryState) -> dict:
+async def answer_query(state: QueryState) -> dict:
     log.info("query_graph.answer_query", symbol=state["symbol"], query=state["query"])
     prompt = _PROMPT.format(
         symbol=state["symbol"],

@@ -1,9 +1,11 @@
 """
-graphs/news.py
----------------
-News Reporting workflow:
+graphs/news.py — Now fully async
+---------------------------------
+News Reporting workflow with async nodes.
 
   START → search_articles → write_report → END
+
+Async nodes with async tool calls via ainvoke.
 """
 
 from __future__ import annotations
@@ -32,12 +34,12 @@ Articles:
 {articles}
 """
 
-def search_articles(state: NewsState) -> dict:
+async def search_articles(state: NewsState) -> dict:
     log.info("news_graph.search_articles", topic=state["topic"])
-    articles = search_news.invoke({"query": state["topic"], "num_results": 5})
+    articles = await search_news.ainvoke({"query": state["topic"], "num_results": 5})
     return {"raw_articles": articles}
 
-def write_report(state: NewsState) -> dict:
+async def write_report(state: NewsState) -> dict:
     log.info("news_graph.write_report", topic=state["topic"])
     prompt = _PROMPT.format(
         topic=state["topic"],

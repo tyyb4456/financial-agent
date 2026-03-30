@@ -1,9 +1,11 @@
 """
-graphs/reddit.py
------------------
-Reddit Trending Posts workflow:
+graphs/reddit.py — Now fully async
+-----------------------------------
+Reddit Trending Posts workflow with async nodes.
 
   START → fetch_posts → summarise → END
+
+Async nodes with async tool calls via ainvoke.
 """
 
 from __future__ import annotations
@@ -32,12 +34,12 @@ Posts:
 {posts}
 """
 
-def fetch_posts(state: RedditState) -> dict:
+async def fetch_posts(state: RedditState) -> dict:
     log.info("reddit_graph.fetch_posts", subreddit=state["subreddit_name"])
-    posts = fetch_trending_posts.invoke({"subreddit_name": state["subreddit_name"]})
+    posts = await fetch_trending_posts.ainvoke({"subreddit_name": state["subreddit_name"]})
     return {"raw_posts": posts}
 
-def summarise(state: RedditState) -> dict:
+async def summarise(state: RedditState) -> dict:
     log.info("reddit_graph.summarise", subreddit=state["subreddit_name"])
     prompt = _PROMPT.format(
         subreddit=state["subreddit_name"],
