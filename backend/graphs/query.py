@@ -1,9 +1,5 @@
 """
-graphs/query.py
-----------------
-Financial Q&A workflow:
-
-  START → fetch_data → fetch_analysis → answer_query → END
+graphs/query.py  — FIXED
 """
 
 from __future__ import annotations
@@ -34,11 +30,21 @@ Investment Data:
 
 def fetch_data(state: QueryState) -> dict:
     log.info("query_graph.fetch_data", symbol=state["symbol"])
-    return {"raw_financials": fetch_financials.invoke({"symbol": state["symbol"]})}
+    data = fetch_financials.invoke({"symbol": state["symbol"]})
+    if "error" in data:                           # ← ADDED
+        raise RuntimeError(
+            f"Failed to fetch financials for {state['symbol']}: {data['error']}"
+        )
+    return {"raw_financials": data}
 
 def fetch_analysis(state: QueryState) -> dict:
     log.info("query_graph.fetch_analysis", symbol=state["symbol"])
-    return {"raw_investment": fetch_investment_analysis.invoke({"symbol": state["symbol"]})}
+    data = fetch_investment_analysis.invoke({"symbol": state["symbol"]})
+    if "error" in data:                           # ← ADDED
+        raise RuntimeError(
+            f"Failed to fetch investment data for {state['symbol']}: {data['error']}"
+        )
+    return {"raw_investment": data}
 
 def answer_query(state: QueryState) -> dict:
     log.info("query_graph.answer_query", symbol=state["symbol"], query=state["query"])

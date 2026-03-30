@@ -2,12 +2,6 @@
 Graph registry
 --------------
 Maps graph name → RegistryEntry.
-
-Each entry stores the graph BUILDER (_build function), not just the compiled
-graph, so the API layer can recompile with a checkpointer injected per-request.
-
-The bare compiled graph (no checkpointer) is also cached for streaming
-use-cases where persistence isn't needed.
 """
 
 from __future__ import annotations
@@ -15,28 +9,34 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, Type
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
-# ── Input schemas ─────────────────────────────────────────────────────────────
+# ── Input schemas (with Swagger examples) ─────────────────────────────────────
 
 class FinancialReporterInput(BaseModel):
+    model_config = ConfigDict(json_schema_extra={"example": {"symbol": "AAPL"}})
     symbol: str
 
 class InvestmentAdvisorInput(BaseModel):
+    model_config = ConfigDict(json_schema_extra={"example": {"symbol": "MSFT"}})
     symbol: str
 
 class FinancialQueryInput(BaseModel):
+    model_config = ConfigDict(json_schema_extra={"example": {"symbol": "GOOG", "query": "What is the P/E ratio?"}})
     symbol: str
     query:  str
 
 class RedditInput(BaseModel):
+    model_config = ConfigDict(json_schema_extra={"example": {"subreddit_name": "investing"}})
     subreddit_name: str
 
 class NewsInput(BaseModel):
+    model_config = ConfigDict(json_schema_extra={"example": {"topic": "AI regulation 2025"}})
     topic: str
 
 class MedicalInput(BaseModel):
+    model_config = ConfigDict(json_schema_extra={"example": {"term": "type 2 diabetes", "query": "What are the latest treatments?"}})
     term:  str
     query: str = ""
 
@@ -45,24 +45,22 @@ class MedicalInput(BaseModel):
 
 @dataclass
 class RegistryEntry:
-    builder:     Callable          # _build(checkpointer=None) function
+    builder:     Callable
     schema:      Type[BaseModel]
     description: str
-    _graph:      Any = field(default=None, repr=False)   # cached bare graph
+    _graph:      Any = field(default=None, repr=False)
 
     @property
     def graph(self):
-        """Bare compiled graph (no checkpointer). Cached on first access."""
         if self._graph is None:
             self._graph = self.builder()
         return self._graph
 
     def with_checkpointer(self, saver):
-        """Return a fresh compiled graph with `saver` as checkpointer."""
         return self.builder(checkpointer=saver)
 
 
-# ── Builder (singleton) ───────────────────────────────────────────────────────
+# ── Singleton ─────────────────────────────────────────────────────────────────
 
 _registry: dict[str, RegistryEntry] | None = None
 

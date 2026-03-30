@@ -1,9 +1,9 @@
 """
-graphs/financial.py
---------------------
-Financial Reporter workflow:
-
-  START → fetch_data → write_report → END
+graphs/financial.py  — FIXED
+------------------------------
+Added error guard in fetch_data: if the tool returns {"error": ...},
+raise RuntimeError immediately so the graph fails fast with a real error
+instead of passing garbage to the LLM.
 """
 
 from __future__ import annotations
@@ -33,6 +33,10 @@ Raw data:
 def fetch_data(state: FinancialState) -> dict:
     log.info("financial_graph.fetch_data", symbol=state["symbol"])
     data = fetch_financials.invoke({"symbol": state["symbol"]})
+    if "error" in data:                           # ← ADDED: fail fast
+        raise RuntimeError(
+            f"Failed to fetch financials for {state['symbol']}: {data['error']}"
+        )
     return {"raw_financials": data}
 
 def write_report(state: FinancialState) -> dict:

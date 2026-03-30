@@ -1,9 +1,5 @@
 """
-graphs/investment.py
----------------------
-Investment Advisor workflow:
-
-  START → fetch_data → fetch_analysis → write_recommendation → END
+graphs/investment.py  — FIXED
 """
 
 from __future__ import annotations
@@ -37,11 +33,21 @@ Valuation & Analyst Data:
 
 def fetch_data(state: InvestmentState) -> dict:
     log.info("investment_graph.fetch_data", symbol=state["symbol"])
-    return {"raw_financials": fetch_financials.invoke({"symbol": state["symbol"]})}
+    data = fetch_financials.invoke({"symbol": state["symbol"]})
+    if "error" in data:                           # ← ADDED
+        raise RuntimeError(
+            f"Failed to fetch financials for {state['symbol']}: {data['error']}"
+        )
+    return {"raw_financials": data}
 
 def fetch_analysis(state: InvestmentState) -> dict:
     log.info("investment_graph.fetch_analysis", symbol=state["symbol"])
-    return {"raw_investment": fetch_investment_analysis.invoke({"symbol": state["symbol"]})}
+    data = fetch_investment_analysis.invoke({"symbol": state["symbol"]})
+    if "error" in data:                           # ← ADDED
+        raise RuntimeError(
+            f"Failed to fetch investment data for {state['symbol']}: {data['error']}"
+        )
+    return {"raw_investment": data}
 
 def write_recommendation(state: InvestmentState) -> dict:
     log.info("investment_graph.write_recommendation", symbol=state["symbol"])
